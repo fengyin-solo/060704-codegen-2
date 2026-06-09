@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { 
   Diary, DiaryState, PipelineStep, ArchivedDiary, ArchiveReason, 
   RepairRecord, User, GalleryHall, GallerySection, GalleryCategory,
-  Exhibit, DiarySchedule
+  Exhibit, DiarySchedule, DiaryDraft
 } from '@/types'
 import { 
   DiaryState as DS, ArchiveReason as AR, 
@@ -28,6 +28,7 @@ const getUserStore = () => {
 export const useDiaryStore = defineStore('diary', () => {
   const diaries = ref<Diary[]>([])
   const archivedDiaries = ref<ArchivedDiary[]>([])
+  const drafts = ref<DiaryDraft[]>([])
   const stateMachines = ref<Map<string, StateMachine>>(new Map())
 
   const currentUserDiaries = computed(() => {
@@ -42,11 +43,22 @@ export const useDiaryStore = defineStore('diary', () => {
     return archivedDiaries.value.filter(ad => ad.diary.ownerId === userId)
   })
 
+  const currentUserDrafts = computed(() => {
+    const userStore = getUserStore()
+    if (!userStore.currentUserId) return []
+    return drafts.value.filter(d => d.ownerId === userStore.currentUserId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  })
+
   function init() {
     diaries.value = storage.getDiaries()
     archivedDiaries.value = storage.getArchivedDiaries()
     
     const userStore = getUserStore()
+    if (userStore.currentUserId) {
+      drafts.value = storage.getDrafts(userStore.currentUserId)
+    }
+    
     if (userStore.currentUserId && diaries.value.length === 0 && archivedDiaries.value.length === 0) {
       setTimeout(() => createSampleDiaries(), 100)
     }
@@ -349,6 +361,139 @@ export const useDiaryStore = defineStore('diary', () => {
     storage.saveDiaries(diaries.value)
     
     return diary
+  }
+
+  function saveDraft(
+    ownerId: string,
+    data: Partial<DiaryDraft> & { id?: string }
+  ): DiaryDraft {
+    const now = globalTimeline.getTime()
+    let draft: DiaryDraft
+
+    if (data.id) {
+      const existingIndex = drafts.value.findIndex(d => d.id === data.id)
+      if (existingIndex !== -1) {
+        draft = {
+          ...drafts.value[existingIndex],
+          ...data,
+          updatedAt: now
+        }
+        drafts.value[existingIndex] = draft
+      } else {
+        draft = {
+          id: data.id,
+          ownerId,
+          title: data.title || '',
+          content: data.content || '',
+          type: data.type || 'base',
+          selectedMethods: data.selectedMethods || ['blur', 'chroma'],
+          schedule: data.schedule || {
+            enablePublishAt: false,
+            enableDecayStartAt: false,
+            enableAutoArchiveAt: false,
+            publishAtOffset: 100,
+            decayStartAtOffset: 50,
+            autoArchiveAtOffset: 500
+          },
+          createdAt: now,
+          updatedAt: now
+        }
+        drafts.value.push(draft)
+      }
+    } else {
+      draft = {
+        id: generateId(),
+        ownerId,
+        title: data.title || '',
+        content: data.content || '',
+        type: data.type || 'base',
+        selectedMethods: data.selectedMethods || ['blur', 'chroma'],
+        schedule: data.schedule || {
+          enablePublishAt: false,
+          enableDecayStartAt: false,
+          enableAutoArchiveAt: false,
+          publishAtOffset: 100,
+          decayStartAtOffset: 50,
+          autoArchiveAtOffset: 500
+        },
+        createdAt: now,
+        updatedAt: now
+      }
+      drafts.value.push(draft)
+    }
+
+    storage.saveDrafts(ownerId, drafts.value.filter(d => d.ownerId === ownerId))
+    return draft
+  }
+
+  function getDraftById(draftId: string): DiaryDraft | undefined {
+    return drafts.value.find(d => d.id === draftId)
+  }
+
+  function deleteDraft(draftId: string): void {
+    const index = drafts.value.findIndex(d => d.id === draftId)
+    if (index !== -1) {
+      const draft = drafts.value[index]
+      drafts.value.splice(index, 1)
+      storage.saveDrafts(draft.ownerId, drafts.value.filter(d => d.ownerId === draft.ownerId))
+    }
+  }
+
+  async function publishDraft(draftId: string): Promise<Diary | null> {
+    const draft = getDraftById(draftId)
+    if (!draft) return null
+
+    const userStore = getUserStore()
+    await pluginLoader.loadAll()
+    const methods = pluginLoader.getDecayMethods()
+
+    const pipeline: PipelineStep[] = draft.selectedMethods.map((methodId, index) => {
+      const method = methods.get(methodId)
+      if (!method) return null
+
+      const params: Record<string, number> = {}
+      Object.entries(method.params).forEach(([key, def]) => {
+        params[key] = (def as { default: number }).default
+      })
+
+      return {
+        methodId,
+        enabled: true,
+        params,
+        order: index
+      }
+    }).filter(Boolean) as PipelineStep[]
+
+    const now = globalTimeline.getTime()
+    const schedule: Partial<DiarySchedule> = {}
+
+    if (draft.schedule.enablePublishAt) {
+      schedule.publishAt = now + draft.schedule.publishAtOffset
+    }
+    if (draft.schedule.enableDecayStartAt) {
+      schedule.decayStartAt = now + draft.schedule.decayStartAtOffset
+    }
+    if (draft.schedule.enableAutoArchiveAt) {
+      schedule.autoArchiveAt = now + draft.schedule.autoArchiveAtOffset
+    }
+
+    const diary = createDiary(
+      draft.ownerId,
+      draft.type,
+      draft.title,
+      draft.content,
+      pipeline,
+      schedule
+    )
+
+    deleteDraft(draftId)
+    return diary
+  }
+
+  function loadUserDrafts(userId: string): void {
+    drafts.value = drafts.value.filter(d => d.ownerId !== userId)
+    const userDrafts = storage.getDrafts(userId)
+    drafts.value.push(...userDrafts)
   }
 
   function updateDiary(diaryId: string, updates: Partial<Diary>): void {
@@ -735,8 +880,10 @@ export const useDiaryStore = defineStore('diary', () => {
   return {
     diaries,
     archivedDiaries,
+    drafts,
     currentUserDiaries,
     currentUserArchivedDiaries,
+    currentUserDrafts,
     publicDiaries,
     init,
     createDiary,
@@ -759,6 +906,11 @@ export const useDiaryStore = defineStore('diary', () => {
     getExhibits,
     updateDiarySchedule,
     isDiaryVisibleToUser,
-    getDiaryScheduleStatus
+    getDiaryScheduleStatus,
+    saveDraft,
+    getDraftById,
+    deleteDraft,
+    publishDraft,
+    loadUserDrafts
   }
 })

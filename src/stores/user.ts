@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { User } from '@/types'
 import { storage } from '@/utils/storage'
 import { generateId } from '@/utils/id'
+import { useDiaryStore } from './diary'
 
 export const useUserStore = defineStore('user', () => {
   const users = ref<User[]>([])
@@ -75,6 +76,9 @@ export const useUserStore = defineStore('user', () => {
   function login(userId: string): void {
     currentUserId.value = userId
     storage.setCurrentUser(userId)
+    
+    const diaryStore = useDiaryStore()
+    diaryStore.loadUserDrafts(userId)
   }
 
   function logout(): void {

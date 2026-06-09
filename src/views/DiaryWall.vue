@@ -9,6 +9,7 @@ import { globalTimeline } from '@/engine/Timeline'
 import TimelineControl from '@/components/timeline/TimelineControl.vue'
 import DiaryCard from '@/components/diary/DiaryCard.vue'
 import CreateDiaryModal from '@/components/diary/CreateDiaryModal.vue'
+import DraftBox from '@/components/diary/DraftBox.vue'
 import type { DiaryState } from '@/types'
 import { STATE_NAMES, STATE_COLORS } from '@/types'
 
@@ -18,8 +19,12 @@ const userStore = useUserStore()
 const diaryStore = useDiaryStore()
 
 const showCreateModal = ref(false)
+const showDraftBox = ref(false)
+const editingDraftId = ref<string | null>(null)
 const filterState = ref<DiaryState | 'all'>('all')
 const { isOwner } = useDiary()
+
+const draftCount = computed(() => diaryStore.currentUserDrafts.length)
 
 const isVisiting = computed(() => !!route.params.userId)
 
@@ -75,6 +80,22 @@ function startVisiting() {
 
 function handleDiaryCreated() {
   showCreateModal.value = false
+  editingDraftId.value = null
+}
+
+function handleEditDraft(draftId: string) {
+  showDraftBox.value = false
+  editingDraftId.value = draftId
+  showCreateModal.value = true
+}
+
+function handleDraftSaved(draftId: string) {
+  editingDraftId.value = draftId
+}
+
+function handleCloseCreateModal() {
+  showCreateModal.value = false
+  editingDraftId.value = null
 }
 
 watch(() => route.params.userId, () => {
@@ -98,13 +119,28 @@ onMounted(() => {
         </p>
       </div>
       
-      <button
-        v-if="canCreate"
-        class="btn-pixel text-diary-fresh border-diary-fresh"
-        @click="showCreateModal = true"
-      >
-        ✏️ 写新日记
-      </button>
+      <div class="flex gap-3">
+        <button
+          v-if="canCreate"
+          class="btn-pixel text-yellow-400 border-yellow-400 relative"
+          @click="showDraftBox = true"
+        >
+          📝 草稿箱
+          <span
+            v-if="draftCount > 0"
+            class="absolute -top-2 -right-2 bg-yellow-500 text-black text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center"
+          >
+            {{ draftCount }}
+          </span>
+        </button>
+        <button
+          v-if="canCreate"
+          class="btn-pixel text-diary-fresh border-diary-fresh"
+          @click="showCreateModal = true"
+        >
+          ✏️ 写新日记
+        </button>
+      </div>
     </div>
     
     <TimelineControl />
@@ -151,8 +187,16 @@ onMounted(() => {
     
     <CreateDiaryModal
       v-if="showCreateModal"
-      @close="showCreateModal = false"
+      :draft-id="editingDraftId || undefined"
+      @close="handleCloseCreateModal"
       @created="handleDiaryCreated"
+      @draft-saved="handleDraftSaved"
+    />
+    
+    <DraftBox
+      v-if="showDraftBox"
+      @close="showDraftBox = false"
+      @edit-draft="handleEditDraft"
     />
   </div>
 </template>

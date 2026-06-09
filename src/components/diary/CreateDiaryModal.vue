@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useDiaryStore } from '@/stores/diary'
 import { pluginLoader } from '@/engine/PluginLoader'
 import { renderPipeline } from '@/engine/RenderPipeline'
 import { globalTimeline } from '@/engine/Timeline'
-import type { PipelineStep, DiaryType, DiarySchedule } from '@/types'
+import type { PipelineStep, DiaryType, DiarySchedule, DiaryDraft } from '@/types'
+
+const props = defineProps<{
+  draftId?: string
+}>()
 
 const emit = defineEmits<{
   close: []
   created: []
+  draftSaved: [draftId: string]
 }>()
 
 const userStore = useUserStore()
@@ -20,6 +25,7 @@ const content = ref('')
 const selectedType = ref('base')
 const selectedMethods = ref<string[]>(['blur', 'chroma'])
 const isCreating = ref(false)
+const isSavingDraft = ref(false)
 const showSchedule = ref(false)
 
 const enablePublishAt = ref(false)
@@ -30,16 +36,51 @@ const publishAtOffset = ref(100)
 const decayStartAtOffset = ref(50)
 const autoArchiveAtOffset = ref(500)
 
+const editingDraft = ref<DiaryDraft | null>(null)
+
 const diaryTypes = ref<[string, DiaryType][]>([])
 const decayMethods = computed(() => Array.from(pluginLoader.getDecayMethods().entries()))
+
+const isEditing = computed(() => !!editingDraft.value)
 
 onMounted(async () => {
   await pluginLoader.loadAll()
   diaryTypes.value = Array.from(pluginLoader.getDiaryTypes().entries())
+  
+  if (props.draftId) {
+    loadDraft(props.draftId)
+  }
 })
+
+watch(() => props.draftId, (newId) => {
+  if (newId) {
+    loadDraft(newId)
+  }
+})
+
+function loadDraft(draftId: string) {
+  const draft = diaryStore.getDraftById(draftId)
+  if (draft) {
+    editingDraft.value = draft
+    title.value = draft.title
+    content.value = draft.content
+    selectedType.value = draft.type
+    selectedMethods.value = [...draft.selectedMethods]
+    enablePublishAt.value = draft.schedule.enablePublishAt
+    enableDecayStartAt.value = draft.schedule.enableDecayStartAt
+    enableAutoArchiveAt.value = draft.schedule.enableAutoArchiveAt
+    publishAtOffset.value = draft.schedule.publishAtOffset
+    decayStartAtOffset.value = draft.schedule.decayStartAtOffset
+    autoArchiveAtOffset.value = draft.schedule.autoArchiveAtOffset
+  }
+}
 
 const canCreate = computed(() => {
   return title.value.trim() && content.value.trim()
+})
+
+const canSaveDraft = computed(() => {
+  return title.value.trim() || content.value.trim()
 })
 
 const schedulePreview = computed(() => {
@@ -73,6 +114,17 @@ function getSchedule(): Partial<DiarySchedule> {
   }
   
   return schedule
+}
+
+function getDraftScheduleData() {
+  return {
+    enablePublishAt: enablePublishAt.value,
+    enableDecayStartAt: enableDecayStartAt.value,
+    enableAutoArchiveAt: enableAutoArchiveAt.value,
+    publishAtOffset: publishAtOffset.value,
+    decayStartAtOffset: decayStartAtOffset.value,
+    autoArchiveAtOffset: autoArchiveAtOffset.value
+  }
 }
 
 async function handleCreate() {
@@ -114,6 +166,32 @@ async function handleCreate() {
   }, 300)
 }
 
+async function handleSaveDraft() {
+  if (!canSaveDraft.value || !userStore.currentUserId) return
+  
+  isSavingDraft.value = true
+  
+  try {
+    const draft = diaryStore.saveDraft(userStore.currentUserId, {
+      id: editingDraft.value?.id,
+      title: title.value.trim(),
+      content: content.value.trim(),
+      type: selectedType.value,
+      selectedMethods: [...selectedMethods.value],
+      schedule: getDraftScheduleData()
+    })
+    
+    editingDraft.value = draft
+    emit('draftSaved', draft.id)
+    
+    setTimeout(() => {
+      isSavingDraft.value = false
+    }, 500)
+  } catch (e) {
+    isSavingDraft.value = false
+  }
+}
+
 function toggleMethod(methodId: string) {
   const index = selectedMethods.value.indexOf(methodId)
   if (index === -1) {
@@ -128,6 +206,18 @@ function formatTime(offset: number): string {
   if (offset < 1000) return `${(offset / 100).toFixed(1)} 百单位`
   return `${(offset / 1000).toFixed(1)} 千单位`
 }
+
+async function handlePublishFromDraft() {
+  if (!canCreate.value || !editingDraft.value) return
+  
+  isCreating.value = true
+  
+  await diaryStore.publishDraft(editingDraft.value.id)
+  
+  setTimeout(() => {
+    emit('created')
+  }, 300)
+}
 </script>
 
 <template>
@@ -136,7 +226,7 @@ function formatTime(offset: number): string {
       <div class="p-6">
         <div class="flex items-center justify-between mb-6">
           <h2 class="font-vt323 text-2xl text-diary-fresh glow-text">
-            ✏️ 写新日记
+            {{ isEditing ? '✏️ 编辑草稿' : '✏️ 写新日记' }}
           </h2>
           <button
             class="text-gray-400 hover:text-white text-2xl"
@@ -144,6 +234,12 @@ function formatTime(offset: number): string {
           >
             ✕
           </button>
+        </div>
+        
+        <div v-if="isEditing" class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded">
+          <p class="text-yellow-400 font-vt323 text-sm">
+            📝 正在编辑草稿，你可以保存为草稿或直接发布
+          </p>
         </div>
         
         <div class="space-y-4">
@@ -371,6 +467,31 @@ function formatTime(offset: number): string {
             取消
           </button>
           <button
+            v-if="!isEditing"
+            class="btn-pixel text-yellow-400 border-yellow-400"
+            :disabled="!canSaveDraft || isSavingDraft"
+            @click="handleSaveDraft"
+          >
+            {{ isSavingDraft ? '保存中...' : '📝 保存草稿' }}
+          </button>
+          <template v-else>
+            <button
+              class="btn-pixel text-yellow-400 border-yellow-400"
+              :disabled="!canSaveDraft || isSavingDraft"
+              @click="handleSaveDraft"
+            >
+              {{ isSavingDraft ? '保存中...' : '📝 保存草稿' }}
+            </button>
+            <button
+              class="btn-pixel text-diary-fresh border-diary-fresh"
+              :disabled="!canCreate || isCreating"
+              @click="handlePublishFromDraft"
+            >
+              {{ isCreating ? '发布中...' : '🚀 发布' }}
+            </button>
+          </template>
+          <button
+            v-if="!isEditing"
             class="btn-pixel text-diary-fresh border-diary-fresh"
             :disabled="!canCreate || isCreating"
             @click="handleCreate"

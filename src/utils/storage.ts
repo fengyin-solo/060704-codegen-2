@@ -1,11 +1,12 @@
-import type { Diary, User, InventoryItem, ArchivedDiary } from '@/types'
+import type { Diary, User, InventoryItem, ArchivedDiary, DiaryDraft } from '@/types'
 
 const STORAGE_KEYS = {
   CURRENT_USER: 'glitch_diary_current_user',
   USERS: 'glitch_diary_users',
   DIARIES: 'glitch_diary_diaries',
   INVENTORY: 'glitch_diary_inventory_',
-  ARCHIVED_DIARIES: 'glitch_diary_archived_diaries'
+  ARCHIVED_DIARIES: 'glitch_diary_archived_diaries',
+  DRAFTS: 'glitch_diary_drafts_'
 }
 
 export const storage = {
@@ -55,5 +56,14 @@ export const storage = {
 
   saveArchivedDiaries(archivedDiaries: ArchivedDiary[]): void {
     localStorage.setItem(STORAGE_KEYS.ARCHIVED_DIARIES, JSON.stringify(archivedDiaries))
+  },
+
+  getDrafts(userId: string): DiaryDraft[] {
+    const data = localStorage.getItem(STORAGE_KEYS.DRAFTS + userId)
+    return data ? JSON.parse(data) : []
+  },
+
+  saveDrafts(userId: string, drafts: DiaryDraft[]): void {
+    localStorage.setItem(STORAGE_KEYS.DRAFTS + userId, JSON.stringify(drafts))
   }
 }
